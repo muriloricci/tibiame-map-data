@@ -192,7 +192,7 @@ Contains exactly **64 bytes**, all `0xF0`. No header is present.
 
 #### 4.3 RLE Encoding
 
-This encoding was confirmed from the original C# network protocol source:
+This encoding was confirmed from this C# network protocol source:
 
 ```csharp
 // Network packet handler, opcode 0x28 (minimap data)
