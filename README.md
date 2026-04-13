@@ -2,7 +2,7 @@
 
 This document covers the reverse-engineered `.map` file format used by the TibiaME client to cache minimap data, and the Python script that converts those files into PNG images.
 
-Both the Python script and this documentation were genreated with Claude Sonnet 4.6.
+Both the Python script and this documentation were generated with Claude Sonnet 4.6.
 
 This project is inspired by https://github.com/tibiamaps/tibia-map-data
 
