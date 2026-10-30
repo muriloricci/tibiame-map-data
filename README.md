@@ -172,7 +172,7 @@ Contains a **2-byte header `0x00 0x00`** followed by exactly **64 bytes**, all `
 
 | Offset | Size | Description |
 |--------|------|-------------|
-| 0–1 | 2 bytes | `uint16-LE` — count of **non-zero tiles** in this segment. **Skipped during decoding.** |
+| 0–1 | 2 bytes | `uint16-LE` — count of **non-zero tiles** in this segment. Informational; used by the client for fast tile lookup. **Skipped during decoding.** |
 | 2+ | variable | RLE-encoded tile stream |
 
 #### 4.3 RLE Encoding

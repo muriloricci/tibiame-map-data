@@ -149,7 +149,7 @@ def decode_segment(seg: bytes) -> list:
     """
     Decode one RLE segment into exactly 1024 colour indices.
 
-    Bytes 0-1: uint16-LE count of non-zero tiles (skipped).  Empty
+    Bytes 0-1: uint16-LE count of non-zero tiles (informational, skipped).  Empty
     segments carry header 0x0000 followed by 64 bytes of 0xF0.
     Bytes 2+:  RLE stream — each byte m encodes:
                  upper nibble (m >> 4)   = run_length - 1  (1..16 tiles)
