@@ -79,78 +79,81 @@ def decompress_map(path: str) -> bytes:
 
 def split_segments(data: bytes, path: str = '') -> list:
     """
-    Split decompressed data into exactly 16 segments.
+    Split decompressed data into exactly 16 segments, in file order.
 
-    Segments are delimited by zero-byte runs of length >= 2, BUT only after
-    the first 2 bytes of each segment have been consumed.  Those first 2 bytes
-    are the uint16-LE non-zero-tile-count header; their high byte is often
-    0x00, and if the following RLE byte is also 0x00 the naive scanner would
-    see a false delimiter inside the header.
+    Each segment is laid out as:
 
-    The fix: track how many bytes have been consumed in the current segment
-    (seg_byte).  A zero-run is only treated as a real delimiter once seg_byte
-    >= 2, i.e. after the 2-byte header has been safely passed.
+        [2-byte header][RLE stream][2-byte delimiter]
 
-    This handles all three file layouts seen in practice:
-      A) file starts with [0x00 0x00 ...] — leading delimiter, seg_start set
-         after it, seg_byte resets to 0.
-      B) file starts with [non-zero byte, 0x00, non-zero ...] — no leading
-         delimiter, header high byte is 0x00 but is followed by a non-zero
-         RLE byte so no false split would occur anyway.
-      C) file starts with [non-zero, 0x00, 0x00, ...] — no leading delimiter,
-         header high byte 0x00 followed immediately by 0x00 RLE byte; without
-         the seg_byte guard this produces a false split at offset 1.
+    except that the final segment's trailing delimiter is at the end of
+    the file.  The header is a uint16-LE value, informational only; the
+    script does not validate it against the decoded tiles, because
+    observed values can exceed 1024 (for example 1033 or 1063).
+
+    The RLE stream sums to exactly 1024 tiles for a well-formed segment
+    (see decode_segment).  Segments are therefore located by counting
+    tiles, not by scanning for zero-byte runs.
+
+    Why not scan for zero runs?  The delimiter is exactly 2 bytes
+    (0x00 0x00), but a segment header can itself start with a zero byte.
+    For example, header 1024 is 0x00 0x04, so at a segment boundary the
+    bytes are:
+
+        delimiter 00 00 | header 00 04 | RLE ...
+
+    That is a 3-byte zero run.  A scanner that consumes the whole run
+    loses the header's low byte, reads the next RLE byte as the header
+    (for example 0x04 0x62 = 25092), and decodes the rest of the segment
+    shifted by one byte.  That is the inaccuracy reported in issue #1:
+    most segments decode correctly, and only the segments whose header
+    low byte is 0x00 are shifted.
+
+    Empty segments follow the same layout: header 0x00 0x00 followed by
+    64 bytes of 0xF0 (64 x 16 = 1024 tiles of colour 0).  The 4-byte zero
+    run seen between empty segments is therefore the 2-byte delimiter
+    plus the next segment's 2-byte 0x00 0x00 header, not a single
+    4-byte delimiter.
     """
-    segs      = []
-    i         = 0
-    seg_start = None
-    seg_byte  = 0    # bytes consumed in the current segment
-
-    while i < len(data):
-        if data[i] == 0x00:
-            j = i
-            while j < len(data) and data[j] == 0x00:
-                j += 1
-            run = j - i
-
-            if run >= 2 and seg_byte >= 2:
-                # Real delimiter — only valid after we've passed the 2-byte header
-                if seg_start is not None:
-                    segs.append(data[seg_start:i])
-                seg_start = j
-                seg_byte  = 0
-                i         = j
-            else:
-                # Single zero (RLE data) or we're still in the header — not a delimiter
-                seg_byte += run
-                i        += run
-        else:
-            if seg_start is None:
-                seg_start = i
-            seg_byte += 1
-            i        += 1
-
-    if seg_start is not None and seg_start < len(data):
-        segs.append(data[seg_start:])
-
-    segs = [s for s in segs if len(s) > 0]
-
-    if len(segs) != SEGS_PER_FILE:
+    segs = []
+    i = 0
+    for seg_idx in range(SEGS_PER_FILE):
+        if i + 2 > len(data):
+            label = Path(path).name if path else 'unknown'
+            raise ValueError(
+                f"{label}: segment {seg_idx} header truncated at offset {i}"
+            )
+        seg_start = i
+        i += 2  # header, informational only
+        total = 0
+        while total < TILES_PER_SEG and i < len(data):
+            total += (data[i] >> 4) + 1
+            i += 1
+        segs.append(data[seg_start:i])
+        if seg_idx < SEGS_PER_FILE - 1:
+            if data[i:i + 2] != b'\x00\x00':
+                label = Path(path).name if path else 'unknown'
+                raise ValueError(
+                    f"{label}: segment {seg_idx} delimiter mismatch at "
+                    f"offset {i}: expected 00 00, "
+                    f"got {data[i:i + 2].hex(' ') or 'EOF'}"
+                )
+            i += 2
+    # Trailing delimiter after the final segment, if present.
+    if data[i:i + 2] == b'\x00\x00':
+        i += 2
+    if i != len(data):
         label = Path(path).name if path else 'unknown'
-        print(f"  Warning: {label}: expected {SEGS_PER_FILE} segments, "
-              f"got {len(segs)}. Output may be incorrect.")
-
-    while len(segs) < SEGS_PER_FILE:
-        segs.append(bytes([0xF0] * 64))
-
-    return segs[:SEGS_PER_FILE]
+        print(f"  Warning: {label}: {len(data) - i} trailing byte(s) "
+              f"after segment {SEGS_PER_FILE - 1}.")
+    return segs
 
 
 def decode_segment(seg: bytes) -> list:
     """
     Decode one RLE segment into exactly 1024 colour indices.
 
-    Bytes 0-1: uint16-LE count of non-zero tiles (informational, skipped).
+    Bytes 0-1: uint16-LE header (informational, skipped).  Empty
+    segments carry header 0x0000 followed by 64 bytes of 0xF0.
     Bytes 2+:  RLE stream — each byte m encodes:
                  upper nibble (m >> 4)   = run_length - 1  (1..16 tiles)
                  lower nibble (m & 0x0F) = colour index    (0..15)
