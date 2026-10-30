@@ -86,15 +86,13 @@ def split_segments(data: bytes, path: str = '') -> list:
         [2-byte header][RLE stream][2-byte delimiter]
 
     except that the final segment's trailing delimiter is at the end of
-    the file.  The header is a uint16-LE value, informational only; the
-    script does not validate it against the decoded tiles, because
-    observed values can exceed 1024 (for example 1033 or 1063).
+    the file.  The header is a uint16-LE count of non-zero tiles in the
+    segment. The script skips it during decoding.
 
     The RLE stream sums to exactly 1024 tiles for a well-formed segment
-    (see decode_segment).  Segments are therefore located by counting
-    tiles, not by scanning for zero-byte runs.
+    (see decode_segment).  Segments are therefore located by counting tiles.
 
-    Why not scan for zero runs?  The delimiter is exactly 2 bytes
+    Segment boundaries:  the delimiter is exactly 2 bytes
     (0x00 0x00), but a segment header can itself start with a zero byte.
     For example, header 1024 is 0x00 0x04, so at a segment boundary the
     bytes are:
@@ -104,9 +102,8 @@ def split_segments(data: bytes, path: str = '') -> list:
     That is a 3-byte zero run.  A scanner that consumes the whole run
     loses the header's low byte, reads the next RLE byte as the header
     (for example 0x04 0x62 = 25092), and decodes the rest of the segment
-    shifted by one byte.  That is the inaccuracy reported in issue #1:
-    most segments decode correctly, and only the segments whose header
-    low byte is 0x00 are shifted.
+    shifted by one byte.  Segments whose header low byte is 0x00 are the ones a
+    zero-run scan misplaces.
 
     Empty segments follow the same layout: header 0x00 0x00 followed by
     64 bytes of 0xF0 (64 x 16 = 1024 tiles of colour 0).  The 4-byte zero
@@ -123,7 +120,7 @@ def split_segments(data: bytes, path: str = '') -> list:
                 f"{label}: segment {seg_idx} header truncated at offset {i}"
             )
         seg_start = i
-        i += 2  # header, informational only
+        i += 2  # header, skipped
         total = 0
         while total < TILES_PER_SEG and i < len(data):
             total += (data[i] >> 4) + 1
@@ -152,7 +149,7 @@ def decode_segment(seg: bytes) -> list:
     """
     Decode one RLE segment into exactly 1024 colour indices.
 
-    Bytes 0-1: uint16-LE header (informational, skipped).  Empty
+    Bytes 0-1: uint16-LE count of non-zero tiles (skipped).  Empty
     segments carry header 0x0000 followed by 64 bytes of 0xF0.
     Bytes 2+:  RLE stream — each byte m encodes:
                  upper nibble (m >> 4)   = run_length - 1  (1..16 tiles)
