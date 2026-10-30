@@ -129,28 +129,13 @@ floor   = Z
 
 ### 3. Decompressed Data Structure
 
-After zlib decompression, the data is a byte stream containing **16 segments** separated by zero-byte delimiter runs.
+After zlib decompression, the data is a byte stream containing **16 segments** in file order. Each segment is followed by a 2-byte delimiter, and the file ends with a trailing delimiter. Segments are located as described in 3.1.
 
 #### 3.1 Segment Delimiters
 
-Zero-byte runs of **length ≥ 2** are segment boundaries:
+Each segment is followed by exactly **2 delimiter bytes** (`0x00 0x00`), and the file ends with a trailing delimiter after the 16th segment. A segment is located by reading its 2-byte header and then its RLE stream until exactly 1024 tiles have been decoded; only then are the next 2 bytes consumed as the delimiter.
 
-- **2-byte zero run** (`0x00 0x00`) → boundary adjacent to a **populated** segment.
-- **4-byte zero run** (`0x00 0x00 0x00 0x00`) → boundary adjacent to an **empty** (all-void) segment.
-- **Single zero byte** (run length = 1) → **not** a delimiter; it is a valid RLE data byte encoding one tile of colour 0.
-
-The file always begins and ends with a delimiter run. Between consecutive delimiters lies one segment's data.
-
-**False-split edge case (fixed in current script):**  
-A populated segment begins with a 2-byte `uint16-LE` header. If that header's high byte is `0x00` and the first RLE byte after it is also `0x00`, a naive scanner would see a 2-byte zero run at offset 1 and create a false segment split. The script guards against this by tracking how many bytes have been consumed in the current segment (`seg_byte`) and only treating a zero-run as a real delimiter once `seg_byte >= 2` — i.e., after the header has been safely passed.
-
-Three distinct file layouts are encountered in practice:
-
-| Layout | First bytes | Notes |
-|--------|-------------|-------|
-| **A** | `00 00 F0 F0 ...` | Leading delimiter; first segment starts at byte 2 |
-| **B** | `XX 00 YY ...` (YY ≠ 00) | No leading delimiter; header high byte is 0x00 but next byte is non-zero — no false split risk |
-| **C** | `XX 00 00 ...` | No leading delimiter; header high byte 0x00 followed by 0x00 RLE byte — would false-split at offset 1 without the guard |
+A segment header can itself start with a zero byte. For example, header 1024 is `0x00 0x04`, so at a boundary the bytes are delimiter `00 00` + header `00 04` + RLE. A zero byte inside the RLE stream is RLE data, not a delimiter.
 
 #### 3.2 Segment Layout in the File
 
@@ -179,7 +164,7 @@ Combined, the 4×4 grid of 32×32 blocks = **128×128 tiles** per file.
 
 #### 4.1 Empty Segment
 
-Contains exactly **64 bytes**, all `0xF0`. No header is present.
+Contains a **2-byte header `0x00 0x00`** followed by exactly **64 bytes**, all `0xF0` (66 bytes in total).
 
 `0xF0` as an RLE byte means "16 tiles of colour 0". So 64 × 16 = **1024 tiles**, all colour 0 (void). This is the encoding for a sector that has never been visited.
 
@@ -275,7 +260,8 @@ world_y = by * 1024 + (Fy - 1) * 128
 decompress_map()   →   zlib.decompress(raw[6 : 6+comp_size])
        ↓
 split_segments()   →   16 byte-strings, one per 32×32 block
-       ↓                (guards against false splits in headers)
+       ↓                (sequential parse: header, RLE until 1024
+                        tiles, then exactly 2 delimiter bytes)
 decode_segment()   →   1024 colour indices via RLE
   each byte m:
     count = (m >> 4) + 1    # 1..16 tiles
